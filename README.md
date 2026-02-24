@@ -52,6 +52,10 @@ python -m pip install -r requirements.txt --trusted-host pypi.org --trusted-host
 
 ### 4) Run the app
 ```bash
+## Run locally
+
+```bash
+pip install streamlit pandas requests beautifulsoup4 xlsxwriter
 streamlit run src/main.py
 ```
 
