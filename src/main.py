@@ -949,12 +949,12 @@ def apply_to_template(template_bytes: bytes, record: PropertyRecord, metrics: Ex
             for alias in aliases:
                 alias_payload[_norm_key(alias)] = payload[canonical_key]
 
-    replacements = 0
+    # Clear all cells in the target worksheets before populating with new data
     target_sheets = wb.worksheets[:3]
-
     for ws in target_sheets:
         for row in ws.iter_rows():
             for cell in row:
+                # Only replace cells that contain template placeholders or keys
                 if not isinstance(cell.value, str):
                     continue
                 raw_text = cell.value
@@ -966,23 +966,17 @@ def apply_to_template(template_bytes: bytes, record: PropertyRecord, metrics: Ex
                     token_candidates = ("{{" + key_norm + "}}", "[[" + key_norm + "]]", "<" + key_norm + ">")
                     if any(token in raw_text.lower().replace(" ", "") for token in token_candidates):
                         cell.value = "" if val is None else str(val)
-                        replacements += 1
-                        compact = ""
                         break
-                if compact == "":
-                    continue
                 # If the whole cell is a placeholder-like key, replace the cell itself.
                 if normalized in alias_payload:
                     cell.value = alias_payload[normalized]
-                    replacements += 1
                     continue
 
                 # Label/value template pattern: write to the next cell when the label references a payload key.
                 for key_norm, val in alias_payload.items():
                     if key_norm and key_norm in normalized:
                         if _safe_write_nearby(ws, cell.row, cell.column + 1, val):
-                            replacements += 1
-                        break
+                            break
 
     out = io.BytesIO()
     wb.save(out)
