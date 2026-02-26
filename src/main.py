@@ -1,3 +1,9 @@
+"""Main module for MLS Executive Studio - Real Estate Property Analysis Tool.
+
+This module provides functionality for extracting real estate listing data from various
+sources, calculating investment metrics, and generating executive reports in Excel format.
+"""
+
 from __future__ import annotations
 
 import io
@@ -20,17 +26,23 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font, PatternFill
 
+
+# Web request configuration
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
-TIMEOUT_S = 18
-SEARCH_TIMEOUT_S = 6
-MAX_CANDIDATES = 20
-MAX_SEARCH_QUERIES = 5
+TIMEOUT_S = 18  # Timeout for general requests
+SEARCH_TIMEOUT_S = 6  # Timeout for search requests
+
+# Search configuration
+MAX_CANDIDATES = 20  # Maximum number of candidate URLs to collect
+MAX_SEARCH_QUERIES = 5  # Maximum number of search queries to execute
 SEARCH_PROVIDERS = ("bing_rss", "duckduckgo_html", "duckduckgo_lite")
+
+# Domain hints for scoring URLs
 REAL_ESTATE_DOMAIN_HINTS = (
     "realtor.com",
     "zillow.com",
@@ -48,6 +60,7 @@ REAL_ESTATE_DOMAIN_HINTS = (
     "landwatch.com",
     "smartmls",
 )
+
 NOISE_DOMAIN_HINTS = (
     "google.com",
     "youtube.com",
@@ -65,44 +78,61 @@ NOISE_DOMAIN_HINTS = (
 
 @dataclass
 class PropertyRecord:
-    mls_number: str
-    state: str
-    listing_url: str | None = None
-    address: str | None = None
-    city: str | None = None
-    zip_code: str | None = None
-    price: float | None = None
-    bedrooms: float | None = None
-    bathrooms: float | None = None
-    living_area_sqft: float | None = None
-    lot_size_sqft: float | None = None
-    property_type: str | None = None
-    year_built: int | None = None
-    broker_name: str | None = None
-    source_name: str | None = None
-    photo_url: str | None = None
+    """Data class representing a real estate property record with various attributes."""
+    
+    # Required fields
+    mls_number: str  # MLS listing number
+    state: str  # State where the property is located
+    
+    # Optional fields
+    listing_url: str | None = None  # URL of the property listing
+    address: str | None = None  # Property address
+    city: str | None = None  # City where the property is located
+    zip_code: str | None = None  # ZIP code of the property
+    price: float | None = None  # Listing price of the property
+    bedrooms: float | None = None  # Number of bedrooms
+    bathrooms: float | None = None  # Number of bathrooms
+    living_area_sqft: float | None = None  # Living area in square feet
+    lot_size_sqft: float | None = None  # Lot size in square feet
+    property_type: str | None = None  # Type of property (e.g., house, condo)
+    year_built: int | None = None  # Year the property was built
+    broker_name: str | None = None  # Name of the listing broker
+    source_name: str | None = None  # Name of the source where the listing was found
+    photo_url: str | None = None  # URL of the property photo
 
 
 @dataclass
 class ExecutiveMetrics:
-    price_per_sqft: float | None
-    rent_proxy_monthly: float | None
-    estimated_noi: float | None
-    estimated_cap_rate: float | None
-    recommendation: str
+    """Data class representing calculated executive metrics for property analysis."""
+    
+    price_per_sqft: float | None  # Price per square foot
+    rent_proxy_monthly: float | None  # Estimated monthly rent
+    estimated_noi: float | None  # Estimated Net Operating Income
+    estimated_cap_rate: float | None  # Estimated capitalization rate
+    recommendation: str  # Recommendation based on metrics
 
 
 @dataclass
 class SearchAttempt:
-    provider: str
-    query: str
-    status_code: int | None
-    outcome: str
-    hits: int = 0
-    detail: str | None = None
+    """Data class representing a search attempt for property listings."""
+    
+    provider: str  # Search provider used
+    query: str  # Query string used for the search
+    status_code: int | None  # HTTP status code of the search request
+    outcome: str  # Outcome of the search attempt
+    hits: int = 0  # Number of hits returned by the search
+    detail: str | None = None  # Additional details about the search attempt
 
 
 def _to_float(value: Any) -> float | None:
+    """Convert a value to float, handling various input types.
+    
+    Args:
+        value: The value to convert to float
+        
+    Returns:
+        The float representation of the value, or None if conversion fails
+    """
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -118,6 +148,14 @@ def _to_float(value: Any) -> float | None:
 
 
 def _decode_search_result_href(href: str | None) -> str | None:
+    """Decode search result href, handling redirects and protocol fixes.
+    
+    Args:
+        href: The href to decode
+        
+    Returns:
+        The decoded href, or None if it's invalid
+    """
     if not href:
         return None
     if href.startswith("//"):
@@ -132,6 +170,15 @@ def _decode_search_result_href(href: str | None) -> str | None:
 
 
 def _is_blocked_search_response(status_code: int, html: str) -> bool:
+    """Check if a search response indicates the request was blocked.
+    
+    Args:
+        status_code: HTTP status code of the response
+        html: HTML content of the response
+        
+    Returns:
+        True if the response indicates the request was blocked, False otherwise
+    """
     if status_code in {202, 403, 429}:
         return True
     text = html.lower()
@@ -145,6 +192,15 @@ def _is_blocked_search_response(status_code: int, html: str) -> bool:
 
 
 def _build_search_queries(mls_number: str, state: str) -> list[str]:
+    """Build search queries for finding property listings.
+    
+    Args:
+        mls_number: The MLS number to search for
+        state: The state to search in
+        
+    Returns:
+        A list of search query strings
+    """
     state_fragment = state if state and state != "Other" else ""
     base_terms = [
         f'"{mls_number}" {state_fragment} MLS listing',
@@ -168,6 +224,17 @@ def _build_search_queries(mls_number: str, state: str) -> list[str]:
 
 
 def _has_mls_match(page_html: str, page_text: str, url: str, mls_number: str) -> bool:
+    """Check if the page contains a match for the MLS number.
+    
+    Args:
+        page_html: HTML content of the page
+        page_text: Text content of the page
+        url: URL of the page
+        mls_number: MLS number to search for
+        
+    Returns:
+        True if the page contains a match for the MLS number, False otherwise
+    """
     mls_escaped = re.escape(mls_number.strip())
     patterns = [
         rf"\bMLS\s*(?:#|ID|Number|No\.?)?\s*[:#]?\s*{mls_escaped}\b",
@@ -182,6 +249,14 @@ def _has_mls_match(page_html: str, page_text: str, url: str, mls_number: str) ->
 
 
 def _candidate_url_score(url: str) -> int:
+    """Score a URL based on its likelihood of containing real estate listings.
+    
+    Args:
+        url: The URL to score
+        
+    Returns:
+        A score representing the likelihood of the URL containing real estate listings
+    """
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     path = parsed.path.lower()
@@ -198,6 +273,14 @@ def _candidate_url_score(url: str) -> int:
 
 
 def _parse_duckduckgo_html_links(html: str) -> list[str]:
+    """Parse links from DuckDuckGo HTML search results.
+    
+    Args:
+        html: HTML content of the search results page
+        
+    Returns:
+        A list of URLs extracted from the search results
+    """
     soup = BeautifulSoup(html, "html.parser")
     links: list[str] = []
     for a in soup.select("a.result__a"):
@@ -208,6 +291,14 @@ def _parse_duckduckgo_html_links(html: str) -> list[str]:
 
 
 def _parse_duckduckgo_lite_links(html: str) -> list[str]:
+    """Parse links from DuckDuckGo Lite search results.
+    
+    Args:
+        html: HTML content of the search results page
+        
+    Returns:
+        A list of URLs extracted from the search results
+    """
     soup = BeautifulSoup(html, "html.parser")
     links: list[str] = []
     for a in soup.select("a"):
@@ -222,6 +313,14 @@ def _parse_duckduckgo_lite_links(html: str) -> list[str]:
 
 
 def _parse_bing_html_links(html: str) -> list[str]:
+    """Parse links from Bing HTML search results.
+    
+    Args:
+        html: HTML content of the search results page
+        
+    Returns:
+        A list of URLs extracted from the search results
+    """
     soup = BeautifulSoup(html, "html.parser")
     links: list[str] = []
     for selector in ("li.b_algo h2 a", "main a"):
@@ -240,6 +339,14 @@ def _parse_bing_html_links(html: str) -> list[str]:
 
 
 def _parse_bing_rss_links(xml_text: str) -> list[str]:
+    """Parse links from Bing RSS search results.
+    
+    Args:
+        xml_text: XML content of the RSS feed
+        
+    Returns:
+        A list of URLs extracted from the RSS feed
+    """
     links: list[str] = []
     try:
         root = ET.fromstring(xml_text)
@@ -257,6 +364,15 @@ def _parse_bing_rss_links(xml_text: str) -> list[str]:
 
 
 def _fetch_search_results(query_text: str, provider: str) -> tuple[list[str], SearchAttempt]:
+    """Fetch search results from a specific provider.
+    
+    Args:
+        query_text: The search query text
+        provider: The search provider to use
+        
+    Returns:
+        A tuple containing a list of URLs and a SearchAttempt object with metadata
+    """
     query = quote_plus(query_text)
     if provider == "duckduckgo_html":
         url = f"https://duckduckgo.com/html/?q={query}"
@@ -298,6 +414,16 @@ def discover_listing_candidates(
     state: str,
     reporter: Callable[[str], None] | None = None,
 ) -> tuple[list[str], list[SearchAttempt]]:
+    """Discover potential listing URLs for a given MLS number and state.
+    
+    Args:
+        mls_number: The MLS number to search for
+        state: The state to search in
+        reporter: Optional callback function to report progress
+        
+    Returns:
+        A tuple containing a list of candidate URLs and a list of search attempts
+    """
     links: list[str] = []
     attempts: list[SearchAttempt] = []
     blocked_providers: set[str] = set()
@@ -331,6 +457,14 @@ def discover_listing_candidates(
 
 
 def diagnose_url_access(url: str) -> str | None:
+    """Diagnose access issues for a given URL.
+    
+    Args:
+        url: The URL to diagnose
+        
+    Returns:
+        A string describing the access issue, or None if no issues found
+    """
     try:
         response = requests.get(url, headers=HEADERS, timeout=SEARCH_TIMEOUT_S)
     except requests.RequestException as exc:
@@ -350,11 +484,28 @@ def diagnose_url_access(url: str) -> str | None:
 
 
 def search_listing_candidates(mls_number: str, state: str) -> list[str]:
+    """Search for listing candidates using the provided MLS number and state.
+    
+    Args:
+        mls_number: The MLS number to search for
+        state: The state to search in
+        
+    Returns:
+        A list of candidate URLs
+    """
     links, _attempts = discover_listing_candidates(mls_number, state)
     return links
 
 
 def _extract_json_ld(soup: BeautifulSoup) -> list[dict[str, Any]]:
+    """Extract JSON-LD structured data from the HTML soup.
+    
+    Args:
+        soup: BeautifulSoup object representing the HTML content
+        
+    Returns:
+        A list of dictionaries containing the extracted JSON-LD data
+    """
     docs: list[dict[str, Any]] = []
     for node in soup.find_all("script", {"type": "application/ld+json"}):
         if not isinstance(node, Tag):
@@ -374,6 +525,14 @@ def _extract_json_ld(soup: BeautifulSoup) -> list[dict[str, Any]]:
 
 
 def _first_image_url(value: Any) -> str | None:
+    """Extract the first valid image URL from a value that could be a string, list, or dict.
+    
+    Args:
+        value: The value to extract an image URL from
+        
+    Returns:
+        The first valid image URL found, or None if none found
+    """
     if isinstance(value, str) and value.startswith("http"):
         return value
     if isinstance(value, list):
@@ -395,6 +554,17 @@ def _extract_from_html_content(
     mls_number: str,
     state: str,
 ) -> PropertyRecord | None:
+    """Extract property record data from HTML content.
+    
+    Args:
+        url: The URL of the page being parsed
+        html_content: The HTML content to parse
+        mls_number: The MLS number to look for
+        state: The state where the property is located
+        
+    Returns:
+        A PropertyRecord object with the extracted data, or None if extraction failed
+    """
     soup = BeautifulSoup(html_content, "html.parser")
     full_text = soup.get_text(" ", strip=True)
     mls_match = _has_mls_match(html_content, full_text, url, mls_number)
@@ -459,6 +629,16 @@ def _extract_from_html_content(
 
 
 def extract_from_listing(url: str, mls_number: str, state: str) -> PropertyRecord | None:
+    """Extract property record from a listing URL.
+    
+    Args:
+        url: The URL of the listing to extract from
+        mls_number: The MLS number to look for
+        state: The state where the property is located
+        
+    Returns:
+        A PropertyRecord object with the extracted data, or None if extraction failed
+    """
     try:
         response = requests.get(url, headers=HEADERS, timeout=TIMEOUT_S)
         response.raise_for_status()
@@ -473,12 +653,31 @@ def extract_from_pasted_content(
     mls_number: str,
     state: str,
 ) -> PropertyRecord | None:
+    """Extract property record from pasted HTML content.
+    
+    Args:
+        source_url: The URL of the source page
+        pasted_content: The HTML content that was pasted
+        mls_number: The MLS number to look for
+        state: The state where the property is located
+        
+    Returns:
+        A PropertyRecord object with the extracted data, or None if extraction failed
+    """
     if not pasted_content.strip():
         return None
     return _extract_from_html_content(source_url.strip() or "manual://pasted-content", pasted_content, mls_number, state)
 
 
 def calculate_metrics(record: PropertyRecord) -> ExecutiveMetrics:
+    """Calculate executive metrics for a property record.
+    
+    Args:
+        record: The PropertyRecord to calculate metrics for
+        
+    Returns:
+        An ExecutiveMetrics object with the calculated metrics
+    """
     ppsf = (record.price / record.living_area_sqft) if record.price and record.living_area_sqft else None
     rent = (record.price * 0.0065 / 12) if record.price else None
     noi = (rent * 12 * 0.92 * 0.68) if rent else None
@@ -496,6 +695,15 @@ def calculate_metrics(record: PropertyRecord) -> ExecutiveMetrics:
 
 
 def render_default_workbook(record: PropertyRecord, metrics: ExecutiveMetrics) -> bytes:
+    """Render a default workbook with the property record and metrics.
+    
+    Args:
+        record: The PropertyRecord to include in the workbook
+        metrics: The ExecutiveMetrics to include in the workbook
+        
+    Returns:
+        Bytes representing the Excel workbook
+    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Executive File"
@@ -537,6 +745,15 @@ def render_default_workbook(record: PropertyRecord, metrics: ExecutiveMetrics) -
 
 
 def _executive_rows(record: PropertyRecord, metrics: ExecutiveMetrics) -> list[tuple[str, Any]]:
+    """Get the rows for the executive summary.
+    
+    Args:
+        record: The PropertyRecord to include in the summary
+        metrics: The ExecutiveMetrics to include in the summary
+        
+    Returns:
+        A list of tuples representing the rows in the executive summary
+    """
     return [
         ("Generated At", datetime.utcnow().isoformat(timespec="seconds") + "Z"),
         ("MLS Number", record.mls_number),
@@ -561,6 +778,13 @@ def _executive_rows(record: PropertyRecord, metrics: ExecutiveMetrics) -> list[t
 
 
 def _write_executive_rows_to_sheet(ws: Any, rows: list[tuple[str, Any]], title: str = "Extracted MLS Data") -> None:
+    """Write executive rows to a worksheet.
+    
+    Args:
+        ws: The worksheet to write to
+        rows: The rows to write
+        title: The title for the sheet
+    """
     ws["A1"] = title
     ws["A1"].font = Font(size=14, bold=True)
     for idx, (k, v) in enumerate(rows, start=3):
@@ -572,10 +796,32 @@ def _write_executive_rows_to_sheet(ws: Any, rows: list[tuple[str, Any]], title: 
 
 
 def _is_writable_cell(ws: Any, row: int, col: int) -> bool:
+    """Check if a cell in a worksheet is writable (not merged).
+    
+    Args:
+        ws: The worksheet to check
+        row: The row number of the cell
+        col: The column number of the cell
+        
+    Returns:
+        True if the cell is writable, False otherwise
+    """
     return not isinstance(ws.cell(row=row, column=col), MergedCell)
 
 
 def _safe_write_nearby(ws: Any, row: int, start_col: int, value: Any, max_offset: int = 6) -> bool:
+    """Safely write a value to a nearby writable cell.
+    
+    Args:
+        ws: The worksheet to write to
+        row: The row number to start searching from
+        start_col: The column number to start searching from
+        value: The value to write
+        max_offset: The maximum number of columns to search ahead
+        
+    Returns:
+        True if the value was written successfully, False otherwise
+    """
     for offset in range(max_offset + 1):
         col = start_col + offset
         if _is_writable_cell(ws, row, col):
@@ -585,11 +831,27 @@ def _safe_write_nearby(ws: Any, row: int, start_col: int, value: Any, max_offset
 
 
 def _norm_key(text: str) -> str:
+    """Normalize a text string for use as a key.
+    
+    Args:
+        text: The text to normalize
+        
+    Returns:
+        The normalized text string
+    """
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9]", "", ascii_text.lower())
 
 
 def _download_photo_bytes(photo_url: str | None) -> bytes | None:
+    """Download photo bytes from a URL.
+    
+    Args:
+        photo_url: The URL of the photo to download
+        
+    Returns:
+        The photo bytes if download was successful, None otherwise
+    """
     if not photo_url:
         return None
     try:
@@ -604,6 +866,12 @@ def _download_photo_bytes(photo_url: str | None) -> bytes | None:
 
 
 def _replace_template_images(wb: Any, photo_bytes: bytes | None) -> None:
+    """Replace images in a workbook with a new photo.
+    
+    Args:
+        wb: The workbook to modify
+        photo_bytes: The new photo bytes to use
+    """
     for ws in wb.worksheets[:3]:
         existing_images = list(getattr(ws, "_images", []))
         if not existing_images:
@@ -635,6 +903,16 @@ def _replace_template_images(wb: Any, photo_bytes: bytes | None) -> None:
 
 
 def apply_to_template(template_bytes: bytes, record: PropertyRecord, metrics: ExecutiveMetrics) -> bytes:
+    """Apply property record and metrics to an Excel template.
+    
+    Args:
+        template_bytes: The Excel template as bytes
+        record: The PropertyRecord to apply to the template
+        metrics: The ExecutiveMetrics to apply to the template
+        
+    Returns:
+        The modified Excel file as bytes
+    """
     wb = load_workbook(io.BytesIO(template_bytes))
     _replace_template_images(wb, _download_photo_bytes(record.photo_url))
     payload = {**asdict(record), **asdict(metrics), "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
